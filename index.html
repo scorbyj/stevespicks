@@ -1181,7 +1181,7 @@ function renderNowWatching(){
 
   NOW_WATCHING.forEach((item,i)=>{
     const pw=document.getElementById('nwp'+i);
-    if(pw) loadPoster(pw,item.tmdbTitle||item.title,item.type,item.year);
+    if(pw) loadPoster(pw,item.tmdbTitle||item.title,item.type,item.year,null,null,item.stars);
   });
 }
 
@@ -1197,7 +1197,7 @@ function togNW(i){
     }
     // Load poster on open
     const pw=document.getElementById('nwp'+i);
-    if(pw&&!pw.querySelector('img')) loadPoster(pw,item.tmdbTitle||item.title,item.type,item.year);
+    if(pw&&!pw.querySelector('img')) loadPoster(pw,item.tmdbTitle||item.title,item.type,item.year,null,null,item.stars);
   }
 }
 
@@ -1455,7 +1455,8 @@ function tog(i){
       const match=allEntries.find(en=>slug(en.title)===title.replace(/ /g,'-'))||null;
       const tmdbOverride=match&&match.tmdbTitle?match.tmdbTitle:null;
       const tmdbIdOverride=match&&match.tmdbId?match.tmdbId:null;
-      loadPoster(pw,title,type,year,tmdbOverride,tmdbIdOverride);
+      const starsOverride=match&&match.stars?match.stars:null;
+      loadPoster(pw,title,type,year,tmdbOverride,tmdbIdOverride,starsOverride);
       const directUrl=match&&match.url?match.url:null;
       loadWatchProviders('sw'+i,title,type,year,tmdbOverride,directUrl);
     }
@@ -1554,7 +1555,7 @@ function renderFeatured() {
 
   grid.innerHTML = picks.map((p, i) => {
     const e = p.entry;
-    FCARDS[i] = { title: e.title, type: p.type };
+    FCARDS[i] = { title: e.title, type: p.type, stars: e.stars };
     const prev = esc(firstSent(e.log));
     return '<div class="fcard" id="fc'+i+'" onclick="togFcard('+i+')">'
       + '<div class="fcard-type '+p.type+'"><span>'+(p.type==='show'?'📺 Show':'🎬 Movie')+'</span><span class="fcard-genre">'+esc(p.genre)+'</span></div>'
@@ -1575,7 +1576,7 @@ function renderFeatured() {
   // Load all featured posters immediately (they're visible in grid)
   picks.forEach((p, i) => {
     const pw = document.getElementById('fp'+i);
-    loadPoster(pw, p.entry.title, p.type, p.entry.year);
+    loadPoster(pw, p.entry.title, p.type, p.entry.year, null, null, p.entry.stars);
   });
 }
 function togFcard(i) {
@@ -1585,7 +1586,7 @@ function togFcard(i) {
   // Load poster when opened
   if(el.classList.contains('open') && FCARDS[i]){
     const pw = document.getElementById('fp'+i);
-    loadPoster(pw, FCARDS[i].title, FCARDS[i].type);
+    loadPoster(pw, FCARDS[i].title, FCARDS[i].type, null, null, null, FCARDS[i].stars);
   }
 }
 
@@ -1665,18 +1666,37 @@ async function fetchPoster(title,type,year,tmdbId){
   }catch(e){return null;}
 }
 
-function loadPoster(el,title,type,year,tmdbTitle,tmdbId){
+async function fetchPersonPhoto(stars){
+  if(!stars)return null;
+  const first=stars.split(/[,;]/)[0].trim();
+  if(!first||/^(directed|tbd|various|\d)/i.test(first))return null;
+  const ck='person_'+first;
+  if(posterCache[ck]!==undefined)return posterCache[ck]||null;
+  posterCache[ck]=null;
+  try{
+    const hdrs={'Authorization':'Bearer '+TMDB_TOKEN};
+    const res=await fetch('https://api.themoviedb.org/3/search/person?query='+encodeURIComponent(first)+'&page=1&api_key='+TMDB_V3,{headers:hdrs});
+    const data=await res.json();
+    const hit=data.results&&data.results[0];
+    if(hit&&hit.profile_path){const url='https://image.tmdb.org/t/p/w300'+hit.profile_path;posterCache[ck]=url;return url;}
+    return null;
+  }catch(e){return null;}
+}
+
+function loadPoster(el,title,type,year,tmdbTitle,tmdbId,stars){
   if(!el)return;
+  function showImg(url,cover){
+    const img=document.createElement('img');
+    img.src=url;img.alt=title;
+    img.style.cssText='width:100%;height:100%;object-fit:'+(cover?'cover':'contain')+';border-radius:8px;background:var(--bg4)';
+    img.loading='lazy';
+    img.onerror=function(){el.innerHTML='<div class="poster-placeholder">🎬</div>';};
+    el.innerHTML='';
+    el.appendChild(img);
+  }
   fetchPoster(tmdbTitle||title,type,year,tmdbId).then(url=>{
-    if(url&&url!=='none'){
-      const img=document.createElement('img');
-      img.src=url;img.alt=title;
-      img.style.cssText='width:100%;height:100%;object-fit:contain;border-radius:8px;background:var(--bg4)';
-      img.loading='lazy';
-      img.onerror=function(){el.innerHTML='<div class="poster-placeholder">🎬</div>';};
-      el.innerHTML='';
-      el.appendChild(img);
-    }
+    if(url&&url!=='none'){showImg(url,false);}
+    else{fetchPersonPhoto(stars).then(pUrl=>{if(pUrl)showImg(pUrl,true);});}
   });
 }
 
