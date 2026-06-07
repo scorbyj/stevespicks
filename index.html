@@ -1181,7 +1181,7 @@ function renderNowWatching(){
 
   NOW_WATCHING.forEach((item,i)=>{
     const pw=document.getElementById('nwp'+i);
-    if(pw) loadPoster(pw,item.tmdbTitle||item.title,item.type,item.year,null,null,item.stars);
+    if(pw) loadPoster(pw,item.tmdbTitle||item.title,item.type,item.year,null,null,item.stars,item.posterUrl||null);
   });
 }
 
@@ -1197,7 +1197,7 @@ function togNW(i){
     }
     // Load poster on open
     const pw=document.getElementById('nwp'+i);
-    if(pw&&!pw.querySelector('img')) loadPoster(pw,item.tmdbTitle||item.title,item.type,item.year,null,null,item.stars);
+    if(pw&&!pw.querySelector('img')) loadPoster(pw,item.tmdbTitle||item.title,item.type,item.year,null,null,item.stars,item.posterUrl||null);
   }
 }
 
@@ -1456,7 +1456,8 @@ function tog(i){
       const tmdbOverride=match&&match.tmdbTitle?match.tmdbTitle:null;
       const tmdbIdOverride=match&&match.tmdbId?match.tmdbId:null;
       const starsOverride=match&&match.stars?match.stars:null;
-      loadPoster(pw,title,type,year,tmdbOverride,tmdbIdOverride,starsOverride);
+      const posterUrlOverride=match&&match.posterUrl?match.posterUrl:null;
+      loadPoster(pw,title,type,year,tmdbOverride,tmdbIdOverride,starsOverride,posterUrlOverride);
       const directUrl=match&&match.url?match.url:null;
       loadWatchProviders('sw'+i,title,type,year,tmdbOverride,directUrl);
     }
@@ -1555,7 +1556,7 @@ function renderFeatured() {
 
   grid.innerHTML = picks.map((p, i) => {
     const e = p.entry;
-    FCARDS[i] = { title: e.title, type: p.type, stars: e.stars };
+    FCARDS[i] = { title: e.title, type: p.type, stars: e.stars, posterUrl: e.posterUrl||null };
     const prev = esc(firstSent(e.log));
     return '<div class="fcard" id="fc'+i+'" onclick="togFcard('+i+')">'
       + '<div class="fcard-type '+p.type+'"><span>'+(p.type==='show'?'📺 Show':'🎬 Movie')+'</span><span class="fcard-genre">'+esc(p.genre)+'</span></div>'
@@ -1576,7 +1577,7 @@ function renderFeatured() {
   // Load all featured posters immediately (they're visible in grid)
   picks.forEach((p, i) => {
     const pw = document.getElementById('fp'+i);
-    loadPoster(pw, p.entry.title, p.type, p.entry.year, null, null, p.entry.stars);
+    loadPoster(pw, p.entry.title, p.type, p.entry.year, null, null, p.entry.stars, p.entry.posterUrl||null);
   });
 }
 function togFcard(i) {
@@ -1586,7 +1587,7 @@ function togFcard(i) {
   // Load poster when opened
   if(el.classList.contains('open') && FCARDS[i]){
     const pw = document.getElementById('fp'+i);
-    loadPoster(pw, FCARDS[i].title, FCARDS[i].type, null, null, null, FCARDS[i].stars);
+    loadPoster(pw, FCARDS[i].title, FCARDS[i].type, null, null, null, FCARDS[i].stars, FCARDS[i].posterUrl);
   }
 }
 
@@ -1683,7 +1684,22 @@ async function fetchPersonPhoto(stars){
   }catch(e){return null;}
 }
 
-function loadPoster(el,title,type,year,tmdbTitle,tmdbId,stars){
+async function fetchWikiPhoto(stars){
+  if(!stars)return null;
+  const first=stars.split(/[,;]/)[0].trim();
+  if(!first||/^(directed|tbd|various|\d)/i.test(first))return null;
+  const ck='wiki_'+first;
+  if(posterCache[ck]!==undefined)return posterCache[ck]||null;
+  posterCache[ck]=null;
+  try{
+    const res=await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/'+encodeURIComponent(first));
+    const data=await res.json();
+    if(data.thumbnail&&data.thumbnail.source){posterCache[ck]=data.thumbnail.source;return data.thumbnail.source;}
+    return null;
+  }catch(e){return null;}
+}
+
+function loadPoster(el,title,type,year,tmdbTitle,tmdbId,stars,posterUrl){
   if(!el)return;
   function showImg(url,cover){
     const img=document.createElement('img');
@@ -1694,9 +1710,13 @@ function loadPoster(el,title,type,year,tmdbTitle,tmdbId,stars){
     el.innerHTML='';
     el.appendChild(img);
   }
+  if(posterUrl){showImg(posterUrl,true);return;}
   fetchPoster(tmdbTitle||title,type,year,tmdbId).then(url=>{
-    if(url&&url!=='none'){showImg(url,false);}
-    else{fetchPersonPhoto(stars).then(pUrl=>{if(pUrl)showImg(pUrl,true);});}
+    if(url&&url!=='none'){showImg(url,false);return;}
+    fetchPersonPhoto(stars).then(pUrl=>{
+      if(pUrl){showImg(pUrl,true);return;}
+      fetchWikiPhoto(stars).then(wUrl=>{if(wUrl)showImg(wUrl,true);});
+    });
   });
 }
 
