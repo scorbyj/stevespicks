@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cardboard Photo Viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#eef1f2; --surface:#ffffff; --ink:#1b2b36; --muted:#56666f; --accent:#1f6f8b; --accent-ink:#ffffff; --line:#cfd8dc; --ok:#2e7d4f; --warn:#a0621a;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#121c24; --surface:#1b2833; --ink:#e6edf0; --muted:#9fb0ba; --accent:#7cc4dc; --accent-ink:#0d1a21; --line:#2c3d49; --ok:#7fd1a0; --warn:#e8b36a;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#121c24; --surface:#1b2833; --ink:#e6edf0; --muted:#9fb0ba; --accent:#7cc4dc; --accent-ink:#0d1a21; --line:#2c3d49; --ok:#7fd1a0; --warn:#e8b36a;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Atkinson Hyperlegible",system-ui,-apple-system,"Segoe UI",sans-serif;font-size:18px;line-height:1.5}
+.wrap{max-width:960px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:1.9rem;line-height:1.15;margin:0 0 6px;font-weight:700}
+.lede{margin:0 0 18px;color:var(--muted);max-width:60ch}
+.pick{display:inline-flex;align-items:center;justify-content:center;min-height:56px;padding:0 28px;border-radius:14px;background:var(--accent);color:var(--accent-ink);font-weight:700;font-size:1.1rem;cursor:pointer}
+.pick:focus-within{outline:3px solid var(--ink);outline-offset:3px}
+#stage{position:relative;margin-top:20px;width:100%;aspect-ratio:16/9;max-height:62vh;background:#000;border-radius:18px;overflow:hidden;touch-action:none}
+#stage canvas{display:block;width:100%;height:100%;cursor:grab}
+#empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#c9d4da;text-align:center;padding:20px;pointer-events:none}
+.controls{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
+button{font:inherit;min-height:56px;padding:0 22px;border-radius:12px;border:2px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer;font-weight:700}
+button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+button:disabled{opacity:.45;cursor:not-allowed}
+#vr{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);flex:1 1 200px;font-size:1.1rem}
+#status{min-height:1.5em;margin:12px 0 0;color:var(--muted)}
+#list{list-style:none;padding:0;margin:18px 0 0;display:grid;gap:8px}
+#list button{width:100%;text-align:left;display:flex;justify-content:space-between;align-items:center;gap:12px;font-weight:400;padding:10px 16px}
+#list button[aria-current="true"]{border-color:var(--accent);box-shadow:inset 4px 0 0 var(--accent)}
+.name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tag{flex:none;font-size:.85rem;font-weight:700}
+.tag.ok{color:var(--ok)} .tag.warn{color:var(--warn)}
+.help{margin-top:26px;color:var(--muted);font-size:.95rem;max-width:62ch}
+.help p{margin:6px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Step back into your Cardboard photos</h1>
+  <p class="lede">Choose your .vr.jpg files, pick one, then tap Enter VR. You'll see it in 3D with the sound you recorded. Your photos stay on this device.</p>
+  <label class="pick">Choose photos<input type="file" id="files" accept=".jpg,.jpeg,image/jpeg" multiple hidden></label>
+
+  <div id="stage"><div id="empty">Choose photos to get started.</div></div>
+
+  <div class="controls">
+    <button id="prev" disabled>Previous</button>
+    <button id="vr" disabled>Enter VR</button>
+    <button id="next" disabled>Next</button>
+    <button id="mute" aria-pressed="true">Sound on</button>
+  </div>
+  <p id="status" role="status"></p>
+  <ul id="list"></ul>
+
+  <div class="help">
+    <p>In VR: pull the right trigger for the next photo, the left trigger for the previous one. Press the Meta button to leave VR.</p>
+    <p>Outside VR: drag the picture to look around.</p>
+    <p>Black above and below the scene is normal. Cardboard Camera doesn't capture the sky or ground.</p>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+const $ = id => document.getElementById(id);
+const stage=$('stage'), statusEl=$('status'), listEl=$('list');
+const vrBtn=$('vr'), prevBtn=$('prev'), nextBtn=$('next'), muteBtn=$('mute');
+const say = t => statusEl.textContent = t;
+
+if (typeof THREE === 'undefined') { say('The 3D engine did not load. Check the internet connection and reload.'); return; }
+
+// ---------- renderer ----------
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
+renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local');
+stage.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+const camera = new THREE.PerspectiveCamera(75, 16/9, 0.1, 100);
+camera.layers.enable(1); // left-eye image in the flat preview
+const pano = new THREE.Group();
+scene.add(pano);
+
+function resize(){
+  if (renderer.xr.isPresenting) return;
+  const w = stage.clientWidth, h = stage.clientHeight;
+  if (!w || !h) return;
+  renderer.setSize(w, h, false);
+  camera.aspect = w/h; camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(stage);
+resize();
+
+// drag to look around
+let yaw=0, pitch=0, drag=null;
+const cv = renderer.domElement;
+cv.addEventListener('pointerdown', e => { drag={x:e.clientX,y:e.clientY,yaw,pitch}; cv.setPointerCapture(e.pointerId); cv.style.cursor='grabbing'; });
+cv.addEventListener('pointermove', e => {
+  if (!drag) return;
+  yaw = drag.yaw + (e.clientX-drag.x)*0.005;
+  pitch = Math.max(-1.2, Math.min(1.2, drag.pitch + (e.clientY-drag.y)*0.005));
+});
+const endDrag = () => { drag=null; cv.style.cursor='grab'; };
+cv.addEventListener('pointerup', endDrag); cv.addEventListener('pointercancel', endDrag);
+
+renderer.setAnimationLoop(() => {
+  if (!renderer.xr.isPresenting) camera.rotation.set(pitch, yaw, 0, 'YXZ');
+  renderer.render(scene, camera);
+});
+
+// ---------- parsing Cardboard Camera .vr.jpg ----------
+const STD = 'http://ns.adobe.com/xap/1.0/\0';
+const EXT = 'http://ns.adobe.com/xmp/extension/\0';
+const latin = new TextDecoder('latin1');
+
+function readXMP(buf){
+  const u8 = new Uint8Array(buf), dv = new DataView(buf);
+  if (u8.length < 4 || dv.getUint16(0) !== 0xFFD8) throw new Error('Not a JPEG file');
+  let p = 2, std = '', ext = null;
+  while (p + 4 <= u8.length){
+    if (u8[p] !== 0xFF) break;
+    const m = u8[p+1];
+    if (m === 0xFF){ p++; continue; }
+    if (m === 0xD8 || m === 0x01 || (m >= 0xD0 && m <= 0xD7)){ p += 2; continue; }
+    if (m === 0xDA || m === 0xD9) break;
+    const len = dv.getUint16(p+2), s = p+4, e = p+2+len;
+    if (e > u8.length) break;
+    if (m === 0xE1){
+      const head = latin.decode(u8.subarray(s, Math.min(s+40, e)));
+      if (head.startsWith(STD)) std += latin.decode(u8.subarray(s+STD.length, e));
+      else if (head.startsWith(EXT)){
+        const q = s + EXT.length + 32; // skip GUID
+        const full = dv.getUint32(q), off = dv.getUint32(q+4);
+        if (!ext) ext = new Uint8Array(full);
+        const chunk = u8.subarray(q+8, e);
+        if (off + chunk.length <= ext.length) ext.set(chunk, off);
+      }
+    }
+    p = e;
+  }
+  return std + (ext ? latin.decode(ext) : '');
+}
+function val(xmp, name){
+  let m = xmp.match(new RegExp(name + '\\s*=\\s*"([^"]*)"'));
+  if (m) return m[1];
+  m = xmp.match(new RegExp('<' + name + '>([^<]*)</' + name + '>'));
+  return m ? m[1] : null;
+}
+function b64bytes(s){
+  const bin = atob(s.replace(/\s+/g,''));
+  const a = new Uint8Array(bin.length);
+  for (let i=0;i<bin.length;i++) a[i] = bin.charCodeAt(i);
+  return a;
+}
+const num = v => (v === null || v === '' || isNaN(+v)) ? null : +v;
+
+async function parseFile(file){
+  const buf = await file.arrayBuffer();
+  const xmp = readXMP(buf);
+  const right = val(xmp, 'GImage:Data');
+  const audio = val(xmp, 'GAudio:Data');
+  const mime = val(xmp, 'GAudio:Mime') || 'audio/mp4';
+  return {
+    name: file.name,
+    left: file,
+    right: right ? new Blob([b64bytes(right)], {type:'image/jpeg'}) : null,
+    audio: audio ? new Blob([b64bytes(audio)], {type:mime}) : null,
+    g: {
+      W: num(val(xmp,'GPano:FullPanoWidthPixels')),
+      H: num(val(xmp,'GPano:FullPanoHeightPixels')),
+      w: num(val(xmp,'GPano:CroppedAreaImageWidthPixels')),
+      h: num(val(xmp,'GPano:CroppedAreaImageHeightPixels')),
+      left: num(val(xmp,'GPano:CroppedAreaLeftPixels')),
+      top: num(val(xmp,'GPano:CroppedAreaTopPixels'))
+    }
+  };
+}
+
+// ---------- building the scene ----------
+function loadImg(blob){
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(blob), img = new Image();
+    img.onload = () => res({img, url});
+    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('Image could not be read')); };
+    img.src = url;
+  });
+}
+function makeTex(img){
+  const t = new THREE.Texture(img);
+  t.encoding = THREE.sRGBEncoding;
+  t.minFilter = THREE.LinearFilter;
+  t.generateMipmaps = false;
+  t.needsUpdate = true;
+  return t;
+}
+function geometry(g, img){
+  const w = g.w || img.width, h = g.h || img.height;
+  const W = g.W || w;
+  let H = g.H || Math.round(W/2);
+  if (H < h) H = h;
+  const left = g.left != null ? g.left : 0;
+  const top = g.top != null ? g.top : Math.round((H-h)/2);
+  const phiStart = left/W*Math.PI*2, phiLen = Math.min(w/W, 1)*Math.PI*2;
+  const thStart = top/H*Math.PI, thLen = Math.min(h/H, 1)*Math.PI;
+  const geo = new THREE.SphereGeometry(10, 128, 48, phiStart, phiLen, thStart, thLen);
+  geo.scale(-1, 1, 1);
+  return {geo, center: phiStart + phiLen/2};
+}
+
+let current = { meshes:[], urls:[] };
+function clearPano(){
+  current.meshes.forEach(m => { pano.remove(m); m.geometry.dispose(); m.material.map.dispose(); m.material.dispose(); });
+  current.urls.forEach(u => URL.revokeObjectURL(u));
+  current = { meshes:[], urls:[] };
+}
+
+// ---------- audio ----------
+const audio = new Audio();
+audio.loop = true;
+let soundOn = true, audioUrl = null, interacted = false;
+function setAudio(blob){
+  audio.pause();
+  if (audioUrl){ URL.revokeObjectURL(audioUrl); audioUrl = null; }
+  if (!blob){ audio.removeAttribute('src'); audio.load(); return; }
+  audioUrl = URL.createObjectURL(blob);
+  audio.src = audioUrl;
+  if (soundOn && interacted) audio.play().catch(()=>{});
+}
+muteBtn.addEventListener('click', () => {
+  soundOn = !soundOn; interacted = true;
+  muteBtn.textContent = soundOn ? 'Sound on' : 'Sound off';
+  muteBtn.setAttribute('aria-pressed', String(soundOn));
+  if (soundOn && audio.src) audio.play().catch(()=>{}); else audio.pause();
+});
+
+// ---------- photo list ----------
+let items = [], index = -1, loading = false;
+
+function renderList(){
+  listEl.innerHTML = '';
+  items.forEach((it, i) => {
+    const li = document.createElement('li');
+    const b = document.createElement('button');
+    b.setAttribute('aria-current', String(i === index));
+    const n = document.createElement('span'); n.className = 'name'; n.textContent = it.name;
+    const t = document.createElement('span');
+    if (it.error){ t.className='tag warn'; t.textContent='Could not open'; }
+    else if (it.right && it.audio){ t.className='tag ok'; t.textContent='3D with sound'; }
+    else if (it.right){ t.className='tag ok'; t.textContent='3D, no sound'; }
+    else { t.className='tag warn'; t.textContent='Flat only'; }
+    b.append(n, t);
+    b.addEventListener('click', () => { interacted = true; show(i); });
+    li.append(b); listEl.append(li);
+  });
+  const usable = items.some(it => !it.error);
+  prevBtn.disabled = nextBtn.disabled = items.filter(it=>!it.error).length < 2;
+  vrBtn.disabled = !usable || !xrSupported;
+}
+
+async function show(i){
+  if (!items.length || loading) return;
+  index = (i + items.length) % items.length;
+  const it = items[index];
+  renderList();
+  if (it.error){ say(it.name + ' is not a Cardboard Camera photo this page can open.'); return; }
+  loading = true;
+  say('Opening ' + it.name + '…');
+  try {
+    const L = await loadImg(it.left);
+    const R = it.right ? await loadImg(it.right) : null;
+    clearPano();
+    const {geo, center} = geometry(it.g, L.img);
+    const mk = (img, layer, g) => {
+      const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({map: makeTex(img), side: THREE.DoubleSide}));
+      m.layers.set(layer); pano.add(m); current.meshes.push(m);
+    };
+    if (R){
+      mk(L.img, 1, geo);           // left eye
+      mk(R.img, 2, geo.clone());   // right eye
+    } else {
+      mk(L.img, 0, geo);           // both eyes
+    }
+    current.urls.push(L.url); if (R) current.urls.push(R.url);
+    pano.rotation.y = center + Math.PI/2; // start facing the middle of the photo
+    yaw = 0; pitch = 0;
+    $('empty').style.display = 'none';
+    setAudio(it.audio);
+    say((index+1) + ' of ' + items.length + ': ' + it.name + (it.right ? '' : ' (no 3D data found, showing flat)') + (it.audio ? '' : ' — no sound recorded'));
+  } catch(err){
+    it.error = true; renderList();
+    say('Could not open ' + it.name + ': ' + err.message);
+  } finally { loading = false; }
+}
+function go(d){
+  if (!items.length) return;
+  let i = index;
+  for (let k=0;k<items.length;k++){ i = (i + d + items.length) % items.length; if (!items[i].error) break; }
+  show(i);
+}
+prevBtn.addEventListener('click', () => { interacted = true; go(-1); });
+nextBtn.addEventListener('click', () => { interacted = true; go(1); });
+document.addEventListener('keydown', e => { if (e.key==='ArrowRight') go(1); if (e.key==='ArrowLeft') go(-1); });
+
+$('files').addEventListener('change', async e => {
+  const files = [...e.target.files];
+  if (!files.length) return;
+  interacted = true;
+  say('Reading ' + files.length + ' photo' + (files.length>1?'s':'') + '…');
+  const parsed = [];
+  for (const f of files){
+    try { parsed.push(await parseFile(f)); }
+    catch(err){ parsed.push({name:f.name, error:true}); }
+  }
+  items = parsed; index = -1;
+  const first = items.findIndex(it => !it.error);
+  renderList();
+  if (first >= 0) show(first); else say('None of these files could be opened. Choose the original .vr.jpg files from Cardboard Camera.');
+  e.target.value = '';
+});
+
+// ---------- VR ----------
+let xrSupported = false, session = null;
+if (navigator.xr && navigator.xr.isSessionSupported){
+  navigator.xr.isSessionSupported('immersive-vr').then(ok => { xrSupported = ok; renderList(); if (!ok) vrBtn.textContent = 'VR not available here'; }).catch(()=>{ vrBtn.textContent = 'VR not available here'; });
+} else {
+  vrBtn.textContent = 'VR not available here';
+}
+
+vrBtn.addEventListener('click', async () => {
+  interacted = true;
+  if (session){ session.end(); return; }
+  try {
+    session = await navigator.xr.requestSession('immersive-vr', {optionalFeatures:['local-floor']});
+    await renderer.xr.setSession(session);
+    vrBtn.textContent = 'Exit VR';
+    session.addEventListener('end', () => { session = null; vrBtn.textContent = 'Enter VR'; resize(); });
+    if (soundOn && audio.src) audio.play().catch(()=>{});
+  } catch(err){
+    session = null;
+    say('Could not start VR: ' + err.message);
+  }
+});
+
+for (let i=0;i<2;i++){
+  const c = renderer.xr.getController(i);
+  c.addEventListener('select', ev => {
+    const hand = ev.data && ev.data.handedness;
+    go(hand === 'left' ? -1 : 1);
+  });
+  scene.add(c);
+}
+})();
+</script>
+</body>
+</html>
